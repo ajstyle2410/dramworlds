@@ -6,5 +6,6 @@ public enum NotificationType {
     TASK_UPDATED,
     INQUIRY_SUBMITTED,
     PROJECT_NOTE,
+    PROJECT_COMPLETED,
     CUSTOM
 }

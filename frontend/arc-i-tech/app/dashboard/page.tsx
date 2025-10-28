@@ -5,7 +5,14 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { apiFetch, formatDate } from "@/lib/api";
 import { ChatPanel } from "@/components/ChatPanel";
-import { ChatMessage, Project, ServiceOffering, TaskBoard } from "@/types";
+import {
+  ChatMessage,
+  Project,
+  ProjectTask,
+  ServiceOffering,
+  TaskBoard,
+  TaskStatus,
+} from "@/types";
 import { Calendar, PenSquare, Rocket, Workflow } from "lucide-react";
 
 type ProjectForm = {
@@ -38,6 +45,22 @@ const emptyTaskSummary: TaskSummary = {
   done: 0,
 };
 
+const emptyTaskBoard: TaskBoard = {
+  todo: [],
+  inProgress: [],
+  review: [],
+  blocked: [],
+  done: [],
+};
+
+const TASK_STATUS_STYLES: Record<TaskStatus, string> = {
+  TODO: "bg-slate-200 text-slate-600",
+  IN_PROGRESS: "bg-indigo-100 text-indigo-600",
+  REVIEW: "bg-amber-100 text-amber-600",
+  BLOCKED: "bg-rose-100 text-rose-600",
+  DONE: "bg-emerald-100 text-emerald-600",
+};
+
 export default function DashboardPage() {
   const router = useRouter();
   const { token, user, isAuthenticated } = useAuth();
@@ -49,6 +72,7 @@ export default function DashboardPage() {
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
   const [taskSummaries, setTaskSummaries] = useState<Record<number, TaskSummary>>({});
+  const [taskBoards, setTaskBoards] = useState<Record<number, TaskBoard>>({});
 
   const loadTaskSummaries = useCallback(async (projectList: Project[]) => {
     if (!token) {
@@ -56,6 +80,7 @@ export default function DashboardPage() {
     }
     if (projectList.length === 0) {
       setTaskSummaries({});
+      setTaskBoards({});
       return;
     }
     try {
@@ -66,14 +91,39 @@ export default function DashboardPage() {
               `/api/dashboard/projects/${project.id}/tasks`,
               { token },
             );
-            return [project.id, summarizeBoard(response.data)] as const;
+            const board = response.data;
+            return [
+              project.id,
+              {
+                summary: summarizeBoard(board),
+                board,
+              },
+            ] as const;
           } catch (error) {
             console.error(`Failed to load tasks for project ${project.id}`, error);
-            return [project.id, { ...emptyTaskSummary }] as const;
+            const fallbackBoard: TaskBoard = {
+              todo: [],
+              inProgress: [],
+              review: [],
+              blocked: [],
+              done: [],
+            };
+            return [
+              project.id,
+              {
+                summary: { ...emptyTaskSummary },
+                board: fallbackBoard,
+              },
+            ] as const;
           }
         }),
       );
-      setTaskSummaries(Object.fromEntries(entries));
+      setTaskSummaries(
+        Object.fromEntries(entries.map(([projectId, payload]) => [projectId, payload.summary])),
+      );
+      setTaskBoards(
+        Object.fromEntries(entries.map(([projectId, payload]) => [projectId, payload.board])),
+      );
     } catch (error) {
       console.error("Failed to process task summaries", error);
     }
@@ -266,31 +316,41 @@ export default function DashboardPage() {
               </span>
             </div>
             {completedProjects.length === 0 ? (
-              <p className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">
+              <p className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">
                 Once a project reaches deployment, it will appear here with delivery highlights.
               </p>
             ) : (
-              <ul className="mt-4 space-y-3 text-sm text-slate-600">
-                {completedProjects.map((project) => (
-                  <li
-                    key={`completed-${project.id}`}
-                    className="rounded-lg border border-slate-200 bg-slate-50 p-3"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-slate-800">
-                        {project.name}
-                      </span>
-                      <span className="text-[11px] uppercase tracking-wide text-emerald-500">
-                        Deployed {formatDate(project.updatedAt ?? project.targetDate)}
-                      </span>
-                    </div>
-                    {project.details && (
-                      <p className="mt-2 text-xs text-slate-500">
-                        {project.details}
+              <ul className="mt-3 space-y-2 text-sm text-slate-600">
+                {completedProjects.map((project) => {
+                  const featureLines = extractFeatureLines(project.details);
+                  return (
+                    <li
+                      key={`completed-${project.id}`}
+                      className="rounded-lg border border-slate-200 bg-slate-50 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-slate-800">
+                          {project.name}
+                        </span>
+                        <span className="text-[11px] uppercase tracking-wide text-emerald-500">
+                          Deployed {formatDate(project.updatedAt ?? project.targetDate)}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs font-semibold text-emerald-600">
+                        Project delivery is complete.
                       </p>
-                    )}
-                  </li>
-                ))}
+                      {featureLines.length > 0 ? (
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-slate-500">
+                          {featureLines.slice(0, 4).map((line, index) => (
+                            <li key={`${project.id}-completed-feature-${index}`}>{line}</li>
+                          ))}
+                        </ul>
+                      ) : project.details ? (
+                        <p className="mt-2 text-[11px] text-slate-500">{project.details}</p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -313,20 +373,28 @@ export default function DashboardPage() {
                 </p>
               )}
               {projects.map((project) => {
-                const featureLines =
-                  project.details
-                    ?.split(/\r?\n+/)
-                    .map((line) => line.trim())
-                    .filter((line) => line.length > 0) ?? [];
+                const featureLines = extractFeatureLines(project.details);
                 const taskSummary = taskSummaries[project.id] ?? emptyTaskSummary;
                 const pendingTasksCount =
                   taskSummary.todo + taskSummary.inProgress + taskSummary.review + taskSummary.blocked;
                 const completedTasksCount = taskSummary.done;
+                const isComplete =
+                  project.status === "DEPLOYED" || (project.progressPercentage ?? 0) >= 100;
+                const board = taskBoards[project.id] ?? emptyTaskBoard;
+                const prioritizedTasks: ProjectTask[] = [
+                  ...board.inProgress,
+                  ...board.todo,
+                  ...board.review,
+                  ...board.blocked,
+                  ...board.done,
+                ];
+                const visibleTasks = prioritizedTasks.slice(0, 4);
+                const progressValue = Math.min(Math.max(project.progressPercentage ?? 0, 0), 100);
 
                 return (
                   <div
                     key={project.id}
-                    className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                    className="min-h-[220px] rounded-xl border border-slate-200 bg-slate-50 p-5 shadow-sm"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
@@ -341,21 +409,21 @@ export default function DashboardPage() {
                     </div>
                     <div className="mt-3">
                       <div className="flex items-center justify-between text-xs text-slate-500">
-                        <span>{project.progressPercentage}% complete</span>
+                        <span>{progressValue}% complete</span>
                         <span>Target {formatDate(project.targetDate)}</span>
                       </div>
                       <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
                         <div
                           className="h-full rounded-full bg-indigo-500 transition-all"
-                          style={{
-                            width: `${Math.min(
-                              Math.max(project.progressPercentage ?? 0, 0),
-                              100,
-                            )}%`,
-                          }}
+                          style={{ width: `${progressValue}%` }}
                         />
                       </div>
                     </div>
+                    {isComplete && (
+                      <p className="mt-2 text-xs font-semibold text-emerald-600">
+                        Project marked as done. We&apos;re tracking post-launch success.
+                      </p>
+                    )}
                     <div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
                       <span className="rounded-lg bg-white px-3 py-2">
                         Completed tasks
@@ -371,18 +439,50 @@ export default function DashboardPage() {
                       </span>
                     </div>
                     {featureLines.length > 0 ? (
-                      <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-slate-500">
-                        {featureLines.slice(0, 5).map((feature, index) => (
-                          <li key={`${project.id}-feature-${index}`}>{feature}</li>
-                        ))}
-                      </ul>
+                      <div className="mt-2 text-xs text-slate-500">
+                        <p className="mb-1 font-semibold text-slate-600">Feature highlights</p>
+                        <ul className="list-disc space-y-1 pl-5">
+                          {featureLines.slice(0, 5).map((feature, index) => (
+                            <li key={`${project.id}-feature-${index}`}>{feature}</li>
+                          ))}
+                        </ul>
+                      </div>
                     ) : project.details ? (
-                      <p className="mt-3 text-xs text-slate-500">
+                      <p className="mt-2 text-xs text-slate-500">
                         {project.details}
                       </p>
                     ) : (
-                      <p className="mt-3 text-xs text-slate-400">
+                      <p className="mt-2 text-xs text-slate-400">
                         Share feature notes with the Arc-i-Tech team to populate this rundown.
+                      </p>
+                    )}
+                    {visibleTasks.length > 0 ? (
+                      <div className="mt-2 rounded-xl bg-white/80 p-3">
+                        <p className="text-xs font-semibold text-slate-600">Task list</p>
+                        <ul className="mt-2 space-y-2 text-xs text-slate-500">
+                          {visibleTasks.map((task) => (
+                            <li
+                              key={`project-${project.id}-task-${task.id}`}
+                              className="flex items-start justify-between gap-3"
+                            >
+                              <div className="max-w-[70%]">
+                                <p className="font-semibold text-slate-700">{task.title}</p>
+                                {task.description && (
+                                  <p className="text-[11px] text-slate-400">{task.description}</p>
+                                )}
+                              </div>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${TASK_STATUS_STYLES[task.status]}`}
+                              >
+                                {task.status.replace("_", " ")}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-400">
+                        Task assignments will appear here as soon as the delivery squad picks them up.
                       </p>
                     )}
                   </div>
@@ -577,6 +677,16 @@ function summarizeBoard(board: TaskBoard): TaskSummary {
     blocked: board.blocked.length,
     done: board.done.length,
   };
+}
+
+function extractFeatureLines(details: string | null | undefined): string[] {
+  if (!details) {
+    return [];
+  }
+  return details
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 function formatCurrency(value: number | null | undefined): string {
