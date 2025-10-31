@@ -1,5 +1,6 @@
 'use client';
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, formatDate, formatRelative } from "@/lib/api";
@@ -27,6 +28,7 @@ import {
   Target,
   User,
   Users,
+  ArrowRight,
 } from "lucide-react";
 
 type DiscussionContext = "PROJECT" | "SERVICE" | "OPERATIONS";
@@ -63,6 +65,35 @@ const emptyTaskForm: ProjectTaskFormState = {
   assigneeId: "",
 };
 
+const productCatalog = [
+  {
+    key: "mock_interviews",
+    name: "Mock Interviews & Placement Guidance",
+    description: "1-on-1 interview practice and placement help"
+  },
+  {
+    key: "project_mentorship",
+    name: "Project Mentorship",
+    description: "Get technical mentorship for your project"
+  },
+  {
+    key: "course_guidance",
+    name: "Course Guidance",
+    description: "Help with learning paths and courses"
+  }
+];
+
+
+type ProgramAccessRequest = {
+  id: number;
+  userId: number;
+  userName: string;
+  productKey: "MOCK_INTERVIEWS" | "PROJECT_MENTORSHIP";
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  note?: string | null;
+  submittedAt: string;
+};
+
 const taskBoardColumns = [
   { key: "todo", label: "To do" },
   { key: "inProgress", label: "In progress" },
@@ -89,7 +120,7 @@ const projectStatuses: Project["status"][] = [
 ];
 
 export default function AdminPage() {
-  const { token, isAuthenticated, isAdmin, isSuperAdmin, logout } = useAuth();
+  const { token, isAuthenticated, isAdmin, isSuperAdmin, logout, user } = useAuth();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
@@ -104,6 +135,7 @@ export default function AdminPage() {
   const [taskBoardLoading, setTaskBoardLoading] = useState(false);
   const [taskBoardError, setTaskBoardError] = useState<string | null>(null);
   const [taskForm, setTaskForm] = useState<ProjectTaskFormState>(emptyTaskForm);
+  const [programAccessRequests, setProgramAccessRequests] = useState<ProgramAccessRequest[]>([]);
 
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(
     null,
@@ -114,6 +146,27 @@ export default function AdminPage() {
   const [discussionForm, setDiscussionForm] = useState(initialDiscussionForm);
   const [postingDiscussion, setPostingDiscussion] = useState(false);
   const [updatingInquiry, setUpdatingInquiry] = useState<number | null>(null);
+  const showProgramDashboardShortcuts = isAdmin && !isSuperAdmin;
+  const programShortcuts = useMemo(
+    () =>
+      [
+        {
+          href: "/interview-sub-admin",
+          title: "Interview sub-admin dashboard",
+          description:
+            "Co-ordinate mock interviews, mentor load, and placement readiness.",
+          accent: "bg-indigo-50 border-indigo-200 text-indigo-600",
+        },
+        {
+          href: "/mentorship-sub-admin",
+          title: "Mentorship sub-admin dashboard",
+          description:
+            "Track mentorship milestones, submissions, and skill progression.",
+          accent: "bg-emerald-50 border-emerald-200 text-emerald-600",
+        },
+      ] as const,
+    [],
+  );
 
   const refreshTaskBoard = useCallback(
     async (projectId: number | null) => {
@@ -157,6 +210,23 @@ export default function AdminPage() {
     [token, refreshTaskBoard],
   );
 
+  const loadProgramAccessRequests = useCallback(async () => {
+    if (!token || (!isSuperAdmin && !isAdmin)) {
+      setProgramAccessRequests([]);
+      return;
+    }
+    try {
+      const response = await apiFetch<ProgramAccessRequest[]>(
+        "/api/program-access/pending",
+        { token },
+      );
+      setProgramAccessRequests(response.data);
+    } catch (error) {
+      console.error("Failed to load program access requests", error);
+      setProgramAccessRequests([]);
+    }
+  }, [token, isSuperAdmin, isAdmin]);
+
   const refreshChat = useCallback(
     async (customerId: number | null) => {
       if (!token || !customerId) {
@@ -170,6 +240,23 @@ export default function AdminPage() {
       setChatMessages(response.data);
     },
     [token],
+  );
+
+  const handleProgramAccessDecision = useCallback(
+    async (requestId: number, status: "APPROVED" | "REJECTED") => {
+      if (!token) return;
+      try {
+        await apiFetch<ProgramAccessRequest>(`/api/program-access/${requestId}`, {
+          method: "PATCH",
+          token,
+          body: JSON.stringify({ status, note: null }),
+        });
+        await loadProgramAccessRequests();
+      } catch (error) {
+        console.error("Failed to update program access request", error);
+      }
+    },
+    [token, loadProgramAccessRequests],
   );
 
   const handleTaskFormChange = (
@@ -340,7 +427,17 @@ export default function AdminPage() {
       return;
     }
     void bootstrap();
-  }, [mounted, isAuthenticated, token, isAdmin, isSuperAdmin, router, bootstrap]);
+    void loadProgramAccessRequests();
+  }, [
+    mounted,
+    isAuthenticated,
+    token,
+    isAdmin,
+    isSuperAdmin,
+    router,
+    bootstrap,
+    loadProgramAccessRequests,
+  ]);
 
   const handleProjectUpdate = async (
     projectId: number,
@@ -495,6 +592,101 @@ export default function AdminPage() {
             </p>
           )}
         </header>
+
+        {showProgramDashboardShortcuts && (
+          <section className="grid gap-3 md:grid-cols-2">
+            {programShortcuts.map((shortcut) => (
+              <Link
+                key={shortcut.href}
+                href={shortcut.href}
+                className={`flex h-full flex-col justify-between rounded-2xl border ${shortcut.accent} p-5 shadow-sm transition hover:bg-white`}
+              >
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {shortcut.title}
+                  </p>
+                  <p className="mt-2 text-xs text-slate-500">{shortcut.description}</p>
+                </div>
+                <span className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
+                  Open dashboard
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </span>
+              </Link>
+            ))}
+          </section>
+        )}
+
+        {(isSuperAdmin || isAdmin) && (
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Program access requests</h2>
+                <p className="text-sm text-slate-500">
+                  Approve or reject customer access to Mock Interviews &amp; Project Mentorship dashboards.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadProgramAccessRequests()}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-500 hover:border-indigo-300 hover:text-indigo-600"
+              >
+                <RefreshCw className="h-3 w-3" /> Refresh queue
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {programAccessRequests.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                  No pending program requests right now. Customers can request access from their dashboard.
+                </p>
+              ) : (
+                programAccessRequests.map((request) => {
+                  const product = productCatalog.find((item) => item.key === request.productKey);
+                  return (
+                    <div
+                      key={request.id}
+                      className="rounded-xl border border-slate-200 bg-slate-50 p-4"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-800">
+                            {request.userName}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Requested {product?.name ?? request.productKey.replace("_", " ")} on {formatDate(request.submittedAt)}
+                          </p>
+                        </div>
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                          {request.status}
+                        </span>
+                      </div>
+                      {request.note ? (
+                        <p className="mt-2 text-xs text-indigo-500">Last note: {request.note}</p>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleProgramAccessDecision(request.id, "APPROVED")}
+                          className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-500"
+                          disabled={request.status !== "PENDING"}
+                        >
+                          Approve &amp; notify
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleProgramAccessDecision(request.id, "REJECTED")}
+                          className="inline-flex items-center gap-2 rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-semibold text-rose-600 hover:border-rose-400 hover:text-rose-700"
+                          disabled={request.status !== "PENDING"}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        )}
 
         <section className="grid gap-4 md:grid-cols-3">
           {stats.map((stat) => (

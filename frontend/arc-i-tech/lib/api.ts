@@ -1,41 +1,74 @@
 import { ApiResponse } from "@/types";
 
+/**
+ * The base API URL — uses env variable if provided.
+ * Example: NEXT_PUBLIC_API_URL=https://api.arcitech.in
+ */
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
+/**
+ * Extended fetch options.
+ */
 export interface ApiFetchOptions extends RequestInit {
   token?: string | null;
   parseJson?: boolean;
 }
 
+/**
+ * Unified error type for API handling.
+ */
 export class ApiError<T = unknown> extends Error {
   status: number;
   payload?: ApiResponse<T>;
+  rawBody?: string;
 
-  constructor(message: string, status: number, payload?: ApiResponse<T>) {
+  constructor(
+    message: string,
+    status: number,
+    payload?: ApiResponse<T>,
+    rawBody?: string
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.payload = payload;
+    this.rawBody = rawBody;
   }
 }
 
+/**
+ * Parses server responses safely — handles both JSON and text fallbacks.
+ */
 async function parseResponse<T>(response: Response): Promise<ApiResponse<T>> {
-  const isJson = response.headers
-    .get("content-type")
-    ?.includes("application/json");
+  const contentType = response.headers.get("content-type");
+  const rawBody = await response.text();
 
-  if (!isJson) {
+  // Handle non-JSON (like HTML or plain text error pages)
+  if (!contentType?.includes("application/json")) {
     throw new ApiError<T>(
-      response.statusText || "Unexpected response from server.",
+      `Invalid JSON response (status ${response.status})`,
       response.status,
+      undefined,
+      rawBody
     );
   }
 
-  const payload = (await response.json()) as ApiResponse<T>;
-  return payload;
+  try {
+    return JSON.parse(rawBody) as ApiResponse<T>;
+  } catch {
+    throw new ApiError<T>(
+      `Malformed JSON response (status ${response.status})`,
+      response.status,
+      undefined,
+      rawBody
+    );
+  }
 }
 
+/**
+ * Universal API fetch wrapper for all backend requests.
+ */
 export async function apiFetch<T>(
   endpoint: string,
   { token, parseJson = true, headers, ...init }: ApiFetchOptions = {}
@@ -55,7 +88,11 @@ export async function apiFetch<T>(
     });
   }
 
-  if (init.body && !(init.body instanceof FormData) && !requestHeaders.has("Content-Type")) {
+  if (
+    init.body &&
+    !(init.body instanceof FormData) &&
+    !requestHeaders.has("Content-Type")
+  ) {
     requestHeaders.set("Content-Type", "application/json");
   }
 
@@ -64,10 +101,11 @@ export async function apiFetch<T>(
     headers: requestHeaders,
   });
 
+  // Handle no JSON parse case (for file downloads etc.)
   if (!parseJson) {
     return {
       success: response.ok,
-      message: response.ok ? undefined : response.statusText,
+      message: response.ok ? "OK" : response.statusText,
       data: null as T,
     } as ApiResponse<T>;
   }
@@ -76,35 +114,33 @@ export async function apiFetch<T>(
   try {
     payload = await parseResponse<T>(response);
   } catch (error) {
-    if (error instanceof ApiError) {
-      throw error;
-    }
+    if (error instanceof ApiError) throw error;
+
     throw new ApiError<T>(
       error instanceof Error ? error.message : "Invalid server response",
-      response.status,
+      response.status
     );
   }
 
   if (!response.ok || !payload.success) {
     throw new ApiError<T>(
-      payload.message ?? response.statusText ?? "Request failed",
+      payload?.message ?? response.statusText ?? "Request failed",
       response.status,
-      payload,
+      payload
     );
   }
 
   return payload;
 }
 
+/**
+ * Utility to format ISO date string as DD MMM YYYY.
+ */
 export function formatDate(dateInput: string | null | undefined): string {
-  if (!dateInput) {
-    return "TBD";
-  }
+  if (!dateInput) return "TBD";
   try {
     const date = new Date(dateInput);
-    if (Number.isNaN(date.getTime())) {
-      return dateInput;
-    }
+    if (Number.isNaN(date.getTime())) return dateInput;
     const months = [
       "Jan",
       "Feb",
@@ -128,6 +164,9 @@ export function formatDate(dateInput: string | null | undefined): string {
   }
 }
 
+/**
+ * Formats a date relative to now (e.g., "2 hr ago").
+ */
 export function formatRelative(dateInput: string): string {
   const date = new Date(dateInput);
   const now = new Date();

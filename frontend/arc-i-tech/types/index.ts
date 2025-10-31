@@ -221,3 +221,127 @@ export interface DeveloperWorkspace {
   notifications: NotificationItem[];
   unreadNotifications: number;
 }
+
+export interface InterviewSession {
+  id: number;
+  scheduledAt: string;
+  durationMinutes: number;
+  format: "SYSTEM_DESIGN" | "DSA" | "BEHAVIORAL" | "DOMAIN";
+  interviewerName: string;
+  focusAreas: string[];
+  recordingUrl?: string | null;
+  feedbackSummary?: string | null;
+}
+
+export interface PlacementChecklistItem {
+  id: number;
+  category: "RESUME" | "PORTFOLIO" | "APTITUDE" | "COMMUNICATION" | "DOMAIN";
+  label: string;
+  status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED";
+  targetDate?: string | null;
+  reviewerNotes?: string | null;
+}
+
+export interface PlacementProgress {
+  overallScore: number;
+  lastUpdated: string;
+  nextMilestone?: string | null;
+  checklist: PlacementChecklistItem[];
+}
+
+export interface MockTopic {
+  id: number;
+  title: string;
+  difficulty: "BEGINNER" | "INTERMEDIATE" | "ADVANCED";
+  tags: string[];
+  lastPracticedAt?: string | null;
+  completionRate: number;
+}
+
+export interface MockIssue {
+  id: number;
+  topicId: number;
+  description: string;
+  resolutionStatus: "OPEN" | "IN_PROGRESS" | "RESOLVED";
+  mentorNotes?: string | null;
+  createdAt: string;
+}
+
+export interface InterviewerProfile {
+  id: number;
+  fullName: string;
+  role: "MENTOR" | "LEAD";
+  expertise: string[];
+  totalSessions: number;
+  rating: number;
+  active: boolean;
+}
+
+export interface MockInterviewRecord {
+  id: number;
+  candidateName: string;
+  interviewerId: number;
+  scheduledAt: string;
+  format: "SYSTEM_DESIGN" | "DSA" | "BEHAVIORAL" | "DOMAIN";
+  status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED";
+  feedback?: string | null;
+  score?: number | null;
+}
+
+export interface MockCandidateProfile {
+  id: number;
+  fullName: string;
+  targetRole: string;
+  currentStatus: "ONBOARDING" | "ACTIVE" | "HIRED" | "PAUSED";
+  nextSessionAt?: string | null;
+  progressScore: number;
+  assignedInterviewerId: number;
+  tags: string[];
+}
+
+export interface MockEscalation {
+  id: number;
+  candidateId: number;
+  priority: "LOW" | "MEDIUM" | "HIGH";
+  issue: string;
+  status: "OPEN" | "TRACKING" | "RESOLVED";
+  createdAt: string;
+  owner?: string | null;
+}
+
+export interface MockResource {
+  id: number;
+  title: string;
+  type: "DOC" | "VIDEO" | "CHECKLIST" | "TEMPLATE";
+  url: string;
+  description?: string | null;
+  updatedAt: string;
+}
+
+export interface MentorshipMilestone {
+  id: number;
+  title: string;
+  description: string;
+  dueDate: string;
+  status: "NOT_STARTED" | "IN_PROGRESS" | "REVIEW" | "DONE";
+  mentorFeedback?: string | null;
+}
+
+export interface MentorshipSubmission {
+  id: number;
+  milestoneId: number;
+  submittedAt: string;
+  artifactUrl: string;
+  reviewStatus: "PENDING" | "APPROVED" | "CHANGES_REQUESTED";
+  score?: number | null;
+  reviewerComments?: string | null;
+}
+
+export interface SkillProgress {
+  id: number;
+  competency: string;
+  currentLevel: number;
+  targetLevel: number;
+  evidence?: string | null;
+  lastUpdated: string;
+}

@@ -1,10 +1,20 @@
 'use client';
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { apiFetch, formatDate } from "@/lib/api";
+import {
+  persistSharedState,
+  readSharedState,
+  subscribeToSharedState,
+} from "@/lib/sharedState";
 import { ChatPanel } from "@/components/ChatPanel";
+import {
+  DashboardSidebar,
+  type DashboardSidebarItem,
+} from "@/components/DashboardSidebar";
 import {
   ChatMessage,
   Project,
@@ -13,7 +23,20 @@ import {
   TaskBoard,
   TaskStatus,
 } from "@/types";
-import { Calendar, PenSquare, Rocket, Workflow } from "lucide-react";
+import {
+  ArrowRight,
+  BarChart3,
+  Calendar,
+  CircleHelp,
+  ClipboardList,
+  LayoutDashboard,
+  MessageSquare,
+  PenSquare,
+  Rocket,
+  Users2,
+  Workflow,
+  X,
+} from "lucide-react";
 
 type ProjectForm = {
   name: string;
@@ -61,6 +84,296 @@ const TASK_STATUS_STYLES: Record<TaskStatus, string> = {
   DONE: "bg-emerald-100 text-emerald-600",
 };
 
+type ProductKey = "MOCK_INTERVIEWS" | "PROJECT_MENTORSHIP" | "SOFTWARE_CONSULTING";
+
+const productCatalog: Array<{
+  key: ProductKey;
+  name: string;
+  description: string;
+  route: string;
+  requiresApproval: boolean;
+  badge: string;
+}> = [
+  {
+    key: "MOCK_INTERVIEWS",
+    name: "Mock Interviews & Placement Guidance",
+    description:
+      "Session calendar, placement checklist, mock topics, interview feedback loops, and offer tracking.",
+    route: "/dashboard/mock-interviews",
+    requiresApproval: true,
+    badge: "Career accelerator",
+  },
+  {
+    key: "PROJECT_MENTORSHIP",
+    name: "Project Mentorship",
+    description:
+      "Roadmap, milestone tracker, submission reviews, skill matrix, and mentor roster.",
+    route: "/dashboard/project-mentorship",
+    requiresApproval: true,
+    badge: "Mentor curated",
+  },
+  {
+    key: "SOFTWARE_CONSULTING",
+    name: "Software Consulting",
+    description:
+      "Consulting engagements, statements of work, billing snapshot, and communication logs.",
+    route: "/dashboard/software-consulting",
+    requiresApproval: false,
+    badge: "Always available",
+  },
+];
+
+const defaultActiveDashboardKeys: ProductKey[] = productCatalog
+  .filter((product) => !product.requiresApproval)
+  .map((product) => product.key);
+
+type RequestStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+interface DashboardAccessRequest {
+  id: number;
+  userId: number;
+  userName: string;
+  productKey: ProductKey;
+  status: RequestStatus;
+  note?: string | null;
+  submittedAt: string;
+  decidedAt?: string | null;
+  decidedBy?: number | null;
+  decidedByName?: string | null;
+}
+
+type ProgramNoteAuthor = "USER" | "INTERVIEW_SUB_ADMIN" | "MENTORSHIP_SUB_ADMIN";
+type ProgramNoteKind = "QUESTION" | "SUGGESTION";
+
+interface ProgramNoteEntry {
+  id: number;
+  product: ProductKey;
+  author: ProgramNoteAuthor;
+  kind: ProgramNoteKind;
+  content: string;
+  participantId: number;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
+interface ProgramChatMessage {
+  id: number;
+  product: ProductKey;
+  from: "USER" | "SUB_ADMIN";
+  content: string;
+  participantId: number;
+  createdAt: string;
+}
+
+type ProgramMeetStatus = "SCHEDULED" | "LIVE" | "ENDED";
+
+interface ProgramMeetSession {
+  id: number;
+  product: ProductKey;
+  title: string;
+  agenda: string;
+  hostId: number;
+  hostName: string;
+  startAt: string;
+  createdAt: string;
+  updatedAt: string;
+  status: ProgramMeetStatus;
+  meetingLink: string;
+}
+
+const PROGRAM_NOTES_KEY = "arc-program-notes";
+const PROGRAM_CHAT_KEY = "arc-program-chat";
+
+function createEmptyNotesStore(): Record<ProductKey, ProgramNoteEntry[]> {
+  return {
+    MOCK_INTERVIEWS: [],
+    PROJECT_MENTORSHIP: [],
+    SOFTWARE_CONSULTING: [],
+  };
+}
+
+function createEmptyChatStore(): Record<ProductKey, ProgramChatMessage[]> {
+  return {
+    MOCK_INTERVIEWS: [],
+    PROJECT_MENTORSHIP: [],
+    SOFTWARE_CONSULTING: [],
+  };
+}
+
+function normalizeNoteEntry(entry: any): ProgramNoteEntry {
+  return {
+    id: entry?.id ?? Date.now(),
+    product: entry?.product ?? "PROJECT_MENTORSHIP",
+    author: entry?.author ?? "USER",
+    kind: entry?.kind ?? "QUESTION",
+    content: entry?.content ?? "",
+    participantId:
+      typeof entry?.participantId === "number"
+        ? entry.participantId
+        : typeof entry?.targetUserId === "number"
+        ? entry.targetUserId
+        : 0,
+    createdAt: entry?.createdAt ?? new Date().toISOString(),
+    updatedAt: entry?.updatedAt ?? null,
+  };
+}
+
+function normalizeChatEntry(entry: any): ProgramChatMessage {
+  return {
+    id: entry?.id ?? Date.now(),
+    product: entry?.product ?? "PROJECT_MENTORSHIP",
+    from: entry?.from === "SUB_ADMIN" ? "SUB_ADMIN" : "USER",
+    content: entry?.content ?? "",
+    participantId:
+      typeof entry?.participantId === "number"
+        ? entry.participantId
+        : typeof entry?.targetUserId === "number"
+        ? entry.targetUserId
+        : 0,
+    createdAt: entry?.createdAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeNoteStore(
+  value: unknown,
+): Record<ProductKey, ProgramNoteEntry[]> {
+  if (!value || typeof value !== "object") {
+    return createEmptyNotesStore();
+  }
+  const payload = value as Record<string, unknown>;
+  return {
+    MOCK_INTERVIEWS: Array.isArray(payload.MOCK_INTERVIEWS)
+      ? payload.MOCK_INTERVIEWS.map(normalizeNoteEntry)
+      : [],
+    PROJECT_MENTORSHIP: Array.isArray(payload.PROJECT_MENTORSHIP)
+      ? payload.PROJECT_MENTORSHIP.map(normalizeNoteEntry)
+      : [],
+    SOFTWARE_CONSULTING: Array.isArray(payload.SOFTWARE_CONSULTING)
+      ? payload.SOFTWARE_CONSULTING.map(normalizeNoteEntry)
+      : [],
+  };
+}
+
+function normalizeChatStore(
+  value: unknown,
+): Record<ProductKey, ProgramChatMessage[]> {
+  if (!value || typeof value !== "object") {
+    return createEmptyChatStore();
+  }
+  const payload = value as Record<string, unknown>;
+  return {
+    MOCK_INTERVIEWS: Array.isArray(payload.MOCK_INTERVIEWS)
+      ? payload.MOCK_INTERVIEWS.map(normalizeChatEntry)
+      : [],
+    PROJECT_MENTORSHIP: Array.isArray(payload.PROJECT_MENTORSHIP)
+      ? payload.PROJECT_MENTORSHIP.map(normalizeChatEntry)
+      : [],
+    SOFTWARE_CONSULTING: Array.isArray(payload.SOFTWARE_CONSULTING)
+      ? payload.SOFTWARE_CONSULTING.map(normalizeChatEntry)
+      : [],
+  };
+}
+
+const indiaDateFormatter = new Intl.DateTimeFormat("en-IN", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  timeZone: "Asia/Kolkata",
+});
+
+const indiaDateTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Asia/Kolkata",
+});
+
+const indiaTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZone: "Asia/Kolkata",
+});
+
+function formatIndiaDate(input: string | number | Date | null | undefined) {
+  if (input === null || input === undefined) {
+    return "";
+  }
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return indiaDateFormatter.format(date);
+}
+
+function formatIndiaDateTime(input: string | number | Date | null | undefined) {
+  if (input === null || input === undefined) {
+    return "";
+  }
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return indiaDateTimeFormatter.format(date);
+}
+
+function formatIndiaTime(input: string | number | Date | null | undefined) {
+  if (input === null || input === undefined) {
+    return "";
+  }
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return indiaTimeFormatter.format(date);
+}
+const USER_SIDEBAR_ITEMS: DashboardSidebarItem[] = [
+  {
+    href: "#overview",
+    label: "Overview",
+    description: "Summary & active workstreams",
+    icon: <LayoutDashboard className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#program-access",
+    label: "Program access",
+    description: "Manage interview & mentorship requests",
+    icon: <ClipboardList className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#program-guidance",
+    label: "Program rooms",
+    description: "Meet invites, notes, and chat threads",
+    icon: <Users2 className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#insights",
+    label: "Delivery pulse",
+    description: "Key metrics across your portfolio",
+    icon: <BarChart3 className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#projects",
+    label: "Project pipeline",
+    description: "Shipments, timelines, and progress",
+    icon: <Workflow className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#requests",
+    label: "Submit request",
+    description: "Kick off the next build phase",
+    icon: <PenSquare className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#communications",
+    label: "Collaboration hub",
+    description: "Chat with teams and track milestones",
+    icon: <MessageSquare className="h-4 w-4 text-indigo-500" />,
+  },
+];
+const PROGRAM_MEETS_KEY = "arc-program-meets";
+
 export default function DashboardPage() {
   const router = useRouter();
   const { token, user, isAuthenticated } = useAuth();
@@ -73,6 +386,172 @@ export default function DashboardPage() {
   const [formFeedback, setFormFeedback] = useState<string | null>(null);
   const [taskSummaries, setTaskSummaries] = useState<Record<number, TaskSummary>>({});
   const [taskBoards, setTaskBoards] = useState<Record<number, TaskBoard>>({});
+  const [manualOpen, setManualOpen] = useState(false);
+  const [selectedProducts, setSelectedProducts] = useState<ProductKey[]>([]);
+  const [accessRequests, setAccessRequests] = useState<DashboardAccessRequest[]>([]);
+  const [programNotes, setProgramNotes] = useState<
+    Record<ProductKey, ProgramNoteEntry[]>
+  >(() =>
+    normalizeNoteStore(
+      readSharedState<Record<ProductKey, ProgramNoteEntry[]>>(
+        PROGRAM_NOTES_KEY,
+        createEmptyNotesStore(),
+      ),
+    ),
+  );
+  const [programChat, setProgramChat] = useState<Record<ProductKey, ProgramChatMessage[]>>(
+    () =>
+      normalizeChatStore(
+        readSharedState<Record<ProductKey, ProgramChatMessage[]>>(
+          PROGRAM_CHAT_KEY,
+          createEmptyChatStore(),
+        ),
+      ),
+  );
+  const [chatDrafts, setChatDrafts] = useState<Record<ProductKey, string>>({
+    MOCK_INTERVIEWS: "",
+    PROJECT_MENTORSHIP: "",
+    SOFTWARE_CONSULTING: "",
+  });
+
+  const loadAccessRequests = useCallback(async () => {
+    if (!token) {
+      setAccessRequests([]);
+      return;
+    }
+    try {
+      const response = await apiFetch<DashboardAccessRequest[]>("/api/dashboard/access", {
+        token,
+      });
+      setAccessRequests(response.data);
+    } catch (error) {
+      console.error("Failed to load dashboard access requests", error);
+      setAccessRequests([]);
+    }
+  }, [token]);
+  const [programMeets, setProgramMeets] = useState<
+    Record<ProductKey, ProgramMeetSession | null>
+  >(() => {
+    const stored = readSharedState<Record<ProductKey, ProgramMeetSession | null>>(
+      PROGRAM_MEETS_KEY,
+      {
+        MOCK_INTERVIEWS: null,
+        PROJECT_MENTORSHIP: null,
+        SOFTWARE_CONSULTING: null,
+      },
+    );
+    return {
+      MOCK_INTERVIEWS: stored.MOCK_INTERVIEWS ?? null,
+      PROJECT_MENTORSHIP: stored.PROJECT_MENTORSHIP ?? null,
+      SOFTWARE_CONSULTING: stored.SOFTWARE_CONSULTING ?? null,
+    };
+  });
+  const activeDashboards = useMemo(() => {
+    const approved = accessRequests
+      .filter((request) => request.status === "APPROVED")
+      .map((request) => request.productKey);
+    return Array.from(new Set([...defaultActiveDashboardKeys, ...approved]));
+  }, [accessRequests]);
+  const approvedProgramDashboards = useMemo(
+    () =>
+      activeDashboards.filter(
+        (product) => product === "MOCK_INTERVIEWS" || product === "PROJECT_MENTORSHIP",
+      ),
+    [activeDashboards],
+  );
+  const hasProgramAccess = approvedProgramDashboards.length > 0;
+
+  const formatAuthorLabel = (author: ProgramNoteAuthor) =>
+    author
+      .split("_")
+      .map((segment) => segment.charAt(0) + segment.slice(1).toLowerCase())
+      .join(" ");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    persistSharedState(PROGRAM_NOTES_KEY, programNotes);
+  }, [programNotes]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    persistSharedState(PROGRAM_CHAT_KEY, programChat);
+  }, [programChat]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    persistSharedState(PROGRAM_MEETS_KEY, programMeets);
+  }, [programMeets]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === PROGRAM_NOTES_KEY) {
+        if (event.newValue) {
+          try {
+            const parsed = JSON.parse(event.newValue) as unknown;
+            setProgramNotes(normalizeNoteStore(parsed));
+          } catch {
+            /* noop */
+          }
+        } else {
+          setProgramNotes(createEmptyNotesStore());
+        }
+      }
+      if (event.key === PROGRAM_CHAT_KEY) {
+        if (event.newValue) {
+          try {
+            const parsed = JSON.parse(event.newValue) as unknown;
+            setProgramChat(normalizeChatStore(parsed));
+          } catch {
+            /* noop */
+          }
+        } else {
+          setProgramChat(createEmptyChatStore());
+        }
+      }
+      if (event.key === PROGRAM_MEETS_KEY) {
+        if (event.newValue) {
+          try {
+            const parsed = JSON.parse(event.newValue) as Record<ProductKey, ProgramMeetSession | null>;
+            setProgramMeets({
+              MOCK_INTERVIEWS: parsed.MOCK_INTERVIEWS ?? null,
+              PROJECT_MENTORSHIP: parsed.PROJECT_MENTORSHIP ?? null,
+              SOFTWARE_CONSULTING: parsed.SOFTWARE_CONSULTING ?? null,
+            });
+          } catch {
+            /* noop */
+          }
+        } else {
+          setProgramMeets({
+            MOCK_INTERVIEWS: null,
+            PROJECT_MENTORSHIP: null,
+            SOFTWARE_CONSULTING: null,
+          });
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    const unsubscribeNotes = subscribeToSharedState<unknown>(PROGRAM_NOTES_KEY, (payload) => {
+      setProgramNotes(normalizeNoteStore(payload));
+    });
+    const unsubscribeChat = subscribeToSharedState<unknown>(PROGRAM_CHAT_KEY, (payload) => {
+      setProgramChat(normalizeChatStore(payload));
+    });
+    const unsubscribeMeets = subscribeToSharedState<
+      Record<ProductKey, ProgramMeetSession | null>
+    >(PROGRAM_MEETS_KEY, (payload) => {
+      setProgramMeets({
+        MOCK_INTERVIEWS: payload.MOCK_INTERVIEWS ?? null,
+        PROJECT_MENTORSHIP: payload.PROJECT_MENTORSHIP ?? null,
+        SOFTWARE_CONSULTING: payload.SOFTWARE_CONSULTING ?? null,
+      });
+    });
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      unsubscribeNotes();
+      unsubscribeChat();
+      unsubscribeMeets();
+    };
+  }, []);
 
   const loadTaskSummaries = useCallback(async (projectList: Project[]) => {
     if (!token) {
@@ -129,11 +608,99 @@ export default function DashboardPage() {
     }
   }, [token]);
 
+  const handleToggleProductSelection = (product: ProductKey) => {
+    setSelectedProducts((prev) =>
+      prev.includes(product)
+        ? prev.filter((key) => key !== product)
+        : [...prev, product],
+    );
+  };
+
+  const handleSubmitProductRequests = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!token) {
+      return;
+    }
+
+    const targets = selectedProducts.filter((key) => {
+      const product = productCatalog.find((item) => item.key === key);
+      if (!product) {
+        return false;
+      }
+      if (!product.requiresApproval) {
+        return false;
+      }
+      const existing = accessRequests.find(
+        (request) => request.productKey === key,
+      );
+      if (!existing) {
+        return true;
+      }
+      if (existing.status === "REJECTED") {
+        return true;
+      }
+      return false;
+    });
+
+    if (targets.length === 0) {
+      setSelectedProducts([]);
+      return;
+    }
+
+    try {
+      await Promise.all(
+        targets.map((productKey) =>
+          apiFetch<DashboardAccessRequest>("/api/dashboard/access", {
+            method: "POST",
+            token,
+            body: JSON.stringify({ productKey }),
+          }),
+        ),
+      );
+      await loadAccessRequests();
+    } catch (error) {
+      console.error("Failed to submit dashboard access request", error);
+    } finally {
+      setSelectedProducts([]);
+    }
+  };
+
+  const handleSendProgramChat = (product: ProductKey) => {
+    const draft = chatDrafts[product]?.trim();
+    if (!draft) {
+      return;
+    }
+    const participantId = user?.id ?? 0;
+    const message: ProgramChatMessage = {
+      id: Date.now(),
+      product,
+      from: "USER",
+      content: draft,
+      participantId,
+      createdAt: new Date().toISOString(),
+    };
+    setProgramChat((prev) => {
+      const existing = prev[product] ?? [];
+      return {
+        ...prev,
+        [product]: [...existing, message],
+      };
+    });
+    setChatDrafts((prev) => ({
+      ...prev,
+      [product]: "",
+    }));
+  };
+
   useEffect(() => {
     if (!isAuthenticated || !token) {
       router.replace("/login");
     }
   }, [isAuthenticated, token, router]);
+
+  useEffect(() => {
+    void loadAccessRequests();
+  }, [loadAccessRequests]);
 
   const refreshData = useCallback(async () => {
     if (!token) return;
@@ -148,12 +715,13 @@ export default function DashboardPage() {
       await loadTaskSummaries(projectResponse.data);
       setServices(serviceResponse.data);
       setMessages(chatResponse.data);
+      await loadAccessRequests();
     } catch (error) {
       console.error("Failed to load dashboard data", error);
     } finally {
       setLoading(false);
     }
-  }, [token, loadTaskSummaries]);
+  }, [token, loadTaskSummaries, loadAccessRequests]);
 
   useEffect(() => {
     refreshData();
@@ -276,17 +844,512 @@ export default function DashboardPage() {
 
   return (
     <div className="bg-slate-100 py-10">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8 px-4">
-        <section>
-          <h1 className="text-2xl font-semibold text-slate-900">
-            Hey {user.fullName.split(" ")[0]}, let&apos;s build something remarkable.
-          </h1>
-          <p className="mt-2 text-sm text-slate-500">
-            Track delivery status, request new modules, and chat with the Arc-i-Tech squad.
-          </p>
+      {manualOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dashboard-manual-title"
+        >
+          <div className="relative w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <header className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2
+                  id="dashboard-manual-title"
+                  className="text-lg font-semibold text-slate-900"
+                >
+                  Dashboard manual
+                </h2>
+                <p className="text-xs text-slate-500">
+                  A quick guide to every panel available in your workspace.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManualOpen(false)}
+                className="rounded-full bg-slate-100 p-2 text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+                aria-label="Close manual"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="max-h-[70vh] overflow-y-auto px-6 py-5 text-sm text-slate-600">
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  1. Getting oriented
+                </h3>
+                <p>
+                  The welcome banner highlights who you are and why you&apos;re here.
+                  Scroll down to review stats, recent launches, timelines, and task
+                  boards tailored to your active projects.
+                </p>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  2. Status tiles
+                </h3>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    <strong>Projects in flight</strong>: Snapshot count of initiatives.
+                  </li>
+                  <li>
+                    <strong>Recently shipped</strong>: Latest deployments with delivery highlights.
+                  </li>
+                  <li>
+                    <strong>Discovery queue</strong>: (Where supported) outlines requests awaiting kickoff.
+                  </li>
+                </ul>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  3. Delivery timeline
+                </h3>
+                <p>
+                  Every project card shows summary copy, completion percentage, target dates,
+                  task counts, feature notes, and a prioritized task list. Track progress without
+                  leaving the dashboard.
+                </p>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  4. Requesting new work
+                </h3>
+                <p>
+                  Use the <strong>Request a new build</strong> form to submit briefs. Provide a
+                  clear problem statement, optional detail paragraphs, and a launch target to
+                  help the Arc-i-Tech squad respond quickly.
+                </p>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  5. Featured capabilities & milestones
+                </h3>
+                <p>
+                  Featured services highlight popular bundles. The milestones lane calls out
+                  upcoming deliverables, progress percentages, and open task counts.
+                </p>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  6. Collaboration tools
+                </h3>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    <strong>Delivery desk</strong>: Chat in real time with the squad.
+                  </li>
+                  <li>
+                    <strong>Notifications</strong>: Use the navbar bell to review launch notices,
+                    task updates, and other alerts.
+                  </li>
+                </ul>
+              </section>
+              <section className="mt-5 space-y-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  7. Tips
+                </h3>
+                <ul className="list-disc space-y-1 pl-5">
+                  <li>
+                    Expand project details to see the latest feature highlights and delivery notes.
+                  </li>
+                  <li>
+                    Task lists show the top priorities; follow up on blocked items from here.
+                  </li>
+                  <li>
+                    After submitting a new brief, watch for status badges to move from planning to development.
+                  </li>
+                </ul>
+              </section>
+            </div>
+            <footer className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => setManualOpen(false)}
+                className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500"
+              >
+                Back to dashboard
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+      <div className="mx-auto flex max-w-7xl flex-col gap-8 px-4 lg:flex-row lg:items-start">
+        <DashboardSidebar
+          title="Dashboard menu"
+          subtitle="Navigate your Arc-i-Tech workspaces"
+          items={USER_SIDEBAR_ITEMS}
+        />
+        <div className="flex-1 space-y-8">
+          <header
+            id="overview"
+            className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+          >
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">
+              Hey {user.fullName.split(" ")[0]}, let&apos;s build something remarkable.
+            </h1>
+            <p className="mt-2 text-sm text-slate-500">
+              Track delivery status, request new modules, and chat with the Arc-i-Tech squad.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setManualOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-indigo-300 hover:text-indigo-600"
+          >
+            <CircleHelp className="h-4 w-4" />
+            View dashboard manual
+          </button>
+          </header>
+
+          <section
+            id="program-access"
+            className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+          >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">
+                Choose your dashboards
+              </h2>
+              <p className="text-sm text-slate-500">
+                Toggle advanced workspaces. Career products need sub-admin approval; consulting workspace is available instantly.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {activeDashboards.map((key) => {
+                const product = productCatalog.find((item) => item.key === key);
+                if (!product) return null;
+                return (
+                  <Link
+                    key={key}
+                    href={product.route}
+                    className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 hover:border-indigo-300 hover:bg-white"
+                  >
+                    {product.name}
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+          <form onSubmit={handleSubmitProductRequests} className="mt-4 grid gap-4 md:grid-cols-3">
+            {productCatalog.map((product) => {
+              const request = accessRequests.find(
+                (entry) => entry.productKey === product.key,
+              );
+              const status = request?.status ?? null;
+              const isActive = activeDashboards.includes(product.key);
+              const isPending = status === "PENDING";
+              const isRejected = status === "REJECTED";
+              const disabled = isActive || isPending;
+              const checked =
+                selectedProducts.includes(product.key) || isActive || isPending;
+              return (
+                <label
+                  key={product.key}
+                  className={`relative flex h-full cursor-pointer flex-col gap-3 rounded-2xl border p-4 transition ${
+                    disabled
+                      ? "border-slate-200 bg-slate-50 text-slate-400"
+                      : checked
+                      ? "border-indigo-300 bg-indigo-50 text-slate-800"
+                      : "border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/60"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-900">
+                      {product.name}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      {product.badge}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600">{product.description}</p>
+                  <div className="mt-auto flex items-center justify-between text-xs text-slate-500">
+                    <span>
+                      {product.requiresApproval ? "Approval required" : "Enabled instantly"}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => handleToggleProductSelection(product.key)}
+                      disabled={disabled}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                  {isPending ? (
+                    <span className="mt-2 inline-flex w-fit items-center rounded-full bg-amber-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-amber-600">
+                      Pending approval
+                    </span>
+                  ) : status === "APPROVED" ? (
+                    <span className="mt-2 inline-flex w-fit items-center rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-600">
+                      Approved{request?.decidedAt ? ` on ${formatIndiaDate(request.decidedAt)}` : ""}
+                    </span>
+                  ) : isRejected ? (
+                    <span className="mt-2 inline-flex w-fit items-center rounded-full bg-rose-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-600">
+                      Rejected{request?.decidedAt ? ` on ${formatIndiaDate(request.decidedAt)}` : ""}
+                    </span>
+                  ) : null}
+                  {isActive && !product.requiresApproval ? (
+                    <span className="mt-2 inline-flex w-fit items-center rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-600">
+                      Active
+                    </span>
+                  ) : null}
+                </label>
+              );
+            })}
+            <div className="md:col-span-3 flex flex-col gap-2 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-slate-500">
+                  Selected products will create individual dashboard access requests.
+                </p>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={selectedProducts.length === 0}
+                >
+                  Submit {selectedProducts.length || 0} request
+                  {selectedProducts.length === 1 ? "" : "s"}
+                </button>
+              </div>
+              {accessRequests.length > 0 ? (
+                <div className="space-y-2 text-xs">
+                  <p className="font-semibold text-slate-700">Recent requests</p>
+                  {accessRequests.map((request) => {
+                    const product = productCatalog.find((item) => item.key === request.productKey);
+                    if (!product) return null;
+                    const statusBadge =
+                      request.status === "APPROVED"
+                        ? "bg-emerald-100 text-emerald-600"
+                        : request.status === "REJECTED"
+                        ? "bg-rose-100 text-rose-600"
+                        : "bg-amber-100 text-amber-600";
+                    return (
+                      <div
+                        key={request.id}
+                        className="flex items-center justify-between rounded-lg bg-white px-3 py-2"
+                      >
+                        <div>
+                          <p className="font-semibold text-slate-800">
+                            {product.name}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            Submitted {formatIndiaDateTime(request.submittedAt)}
+                            {request.decidedAt
+                              ? ` | ${request.status.toLowerCase()} on ${formatIndiaDateTime(
+                                  request.decidedAt,
+                                )}`
+                              : ""}
+                          </p>
+                          {request.note ? (
+                            <p className="mt-1 text-[11px] text-indigo-500">
+                              Note: {request.note}
+                            </p>
+                          ) : null}
+                        </div>
+                        <span
+                          className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusBadge}`}
+                        >
+                          {request.status.toLowerCase()}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  No pending requests. Select a dashboard above to get started.
+                </p>
+              )}
+            </div>
+          </form>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-3">
+        <section
+          id="program-guidance"
+          className={hasProgramAccess ? "grid gap-4 md:grid-cols-2" : "grid gap-4"}
+        >
+          {hasProgramAccess ? (
+            approvedProgramDashboards.map((product) => {
+              const meta = productCatalog.find((item) => item.key === product);
+              const notes = [...(programNotes[product] ?? [])].sort(
+                (a, b) =>
+                  new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+              );
+              const messages = [...(programChat[product] ?? [])].sort(
+                (a, b) =>
+                  new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+              );
+              const meetSession = programMeets[product] ?? null;
+              return (
+                <div
+                  key={`program-${product}`}
+                  className="flex h-full flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+                >
+                  <div>
+                      <h2 className="text-lg font-semibold text-slate-900">
+                        {meta?.name ?? product.replace("_", " ")}
+                      </h2>
+                      <p className="text-sm text-slate-500">
+                        Latest suggestions, questions, and chat from your program team.
+                      </p>
+                    </div>
+                    <div className="space-y-3">
+                      {product === "MOCK_INTERVIEWS" ? (
+                        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                          <h3 className="text-sm font-semibold text-indigo-900">
+                            Google Meet session
+                          </h3>
+                          {meetSession ? (
+                            <div className="mt-3 space-y-2 text-xs text-indigo-900/80">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-wide">
+                                <span className="rounded-full bg-white px-3 py-1 text-indigo-700">
+                                  {meetSession.status === "LIVE"
+                                    ? "Live now"
+                                    : meetSession.status === "SCHEDULED"
+                                    ? "Scheduled"
+                                    : "Ended"}
+                                </span>
+                                <span className="rounded-full bg-white px-3 py-1 text-indigo-700">
+                                  Host - {meetSession.hostName}
+                                </span>
+                                <span className="rounded-full bg-white px-3 py-1 text-indigo-700">
+                                  Starts {formatIndiaDateTime(meetSession.startAt)}
+                                </span>
+                              </div>
+                              <p className="text-sm font-semibold text-indigo-950">{meetSession.title}</p>
+                              {meetSession.agenda ? (
+                                <p className="text-xs text-indigo-900/70 whitespace-pre-line">
+                                  {meetSession.agenda}
+                                </p>
+                              ) : null}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <a
+                                  href={meetSession.meetingLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                                >
+                                  {meetSession.status === "LIVE" ? "Join live Meet" : "Preview Meet link"}
+                                </a>
+                                <span className="text-[11px] text-indigo-900/60">
+                                  Updated {formatIndiaDateTime(meetSession.updatedAt)}
+                                </span>
+                              </div>
+                              {meetSession.status === "ENDED" && (
+                                <p className="text-[11px] text-indigo-900/60">
+                                  This session has ended. Await the next invite from your sub-admin.
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-xs text-indigo-900/70">
+                              Your sub-admin will drop a Google Meet link here when a live mock interview is scheduled.
+                            </p>
+                          )}
+                        </div>
+                      ) : null}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <h3 className="text-sm font-semibold text-slate-900">Notes & suggestions</h3>
+                        <div className="mt-3 space-y-2 text-xs text-slate-600">
+                          {notes.length === 0 ? (
+                            <p>No updates yet. Your sub-admin will drop guidance here.</p>
+                          ) : (
+                            notes.slice(0, 6).map((entry) => (
+                              <div key={entry.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                                <p className="font-semibold text-slate-800">
+                                  {entry.kind === "QUESTION" ? "Question" : "Suggestion"} from{" "}
+                                  {formatAuthorLabel(entry.author)}
+                                </p>
+                                <p className="mt-1 whitespace-pre-line text-slate-600">
+                                  {entry.content}
+                                </p>
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                  Created {formatIndiaDateTime(entry.createdAt)}
+                                  {entry.updatedAt
+                                    ? ` | Updated ${formatIndiaDateTime(entry.updatedAt)}`
+                                    : ""}
+                                </p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <h3 className="text-sm font-semibold text-slate-900">Chat with your sub-admin</h3>
+                        <div className="mt-3 flex h-48 flex-col gap-2 overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                          {messages.length === 0 ? (
+                            <p className="text-slate-400">No messages yet. Say hi!</p>
+                          ) : (
+                            messages.slice(-12).map((message) => (
+                              <div
+                                key={message.id}
+                                className={`flex ${
+                                  message.from === "USER" ? "justify-end" : "justify-start"
+                                }`}
+                              >
+                                <div
+                                  className={`max-w-[80%] rounded-lg px-3 py-2 ${
+                                    message.from === "USER"
+                                      ? "bg-indigo-600 text-white"
+                                      : "bg-slate-200 text-slate-700"
+                                  }`}
+                                >
+                                  <p>{message.content}</p>
+                                  <p className="mt-1 text-[10px] opacity-70">
+                                    {formatIndiaTime(message.createdAt)}
+                                  </p>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            handleSendProgramChat(product);
+                          }}
+                          className="mt-3 flex items-center gap-2"
+                        >
+                          <input
+                            value={chatDrafts[product]}
+                            onChange={(event) =>
+                              setChatDrafts((prev) => ({
+                                ...prev,
+                                [product]: event.target.value,
+                              }))
+                            }
+                            placeholder="Type a message..."
+                            className="flex-1 rounded-full border border-slate-300 px-3 py-2 text-xs text-slate-600 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                          />
+                          <button
+                            type="submit"
+                            className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                          >
+                            Send
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  </div>
+              );
+            })
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center">
+              <h2 className="text-lg font-semibold text-slate-900">Choose your dashboards</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                Once your request for Project Mentorship or Mock Interviews &amp; Placement Guidance is
+                approved, guidance, chat, and session tools will appear here automatically.
+              </p>
+              <p className="mt-3 text-xs text-slate-500">
+                Use the request form above to activate these dashboards. Approved programs sync instantly.
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section
+          id="insights"
+          className="grid gap-4 md:grid-cols-3"
+        >
           {stats.map((stat) => (
             <div
               key={stat.label}
@@ -305,7 +1368,10 @@ export default function DashboardPage() {
           ))}
         </section>
 
-        <section className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]">
+        <section
+          id="projects"
+          className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]"
+        >
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">
@@ -492,7 +1558,10 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+        <section
+          id="requests"
+          className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]"
+        >
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">
@@ -613,7 +1682,10 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+        <section
+          id="communications"
+          className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]"
+        >
           <ChatPanel
             title="Delivery desk"
             messages={messages}
@@ -666,7 +1738,8 @@ export default function DashboardPage() {
         </section>
       </div>
     </div>
-  );
+  </div>
+);
 }
 
 function summarizeBoard(board: TaskBoard): TaskSummary {
@@ -705,3 +1778,8 @@ function formatCurrency(value: number | null | undefined): string {
     return `INR ${value}`;
   }
 }
+
+
+
+
+

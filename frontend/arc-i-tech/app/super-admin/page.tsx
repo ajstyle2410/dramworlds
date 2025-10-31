@@ -2,9 +2,14 @@
 
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { apiFetch, formatDate } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import {
+  DashboardSidebar,
+  type DashboardSidebarItem,
+} from "@/components/DashboardSidebar";
 import {
   AdminDiscussion,
   Project,
@@ -14,29 +19,38 @@ import {
   UserProfile,
 } from "@/types";
 import {
+  BarChart3,
   BellRing,
   ClipboardList,
   Code2,
   Download,
+  LayoutDashboard,
   Loader2,
   Package,
   Plus,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UserCog,
   Users,
-  Trash2,
 } from "lucide-react";
 
-type StaffRole = "SUB_ADMIN" | "DEVELOPER";
+type StaffRole = "SUB_ADMIN" | "INTERVIEW_SUB_ADMIN" | "DEVELOPER";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+
+type ProgramAssignment =
+  | "MOCK_INTERVIEW"
+  | "INTERVIEW_PREP"
+  | "PLACEMENT_GUIDANCE"
+  | "PROJECT_MENTORSHIP";
 
 type StaffFormState = {
   fullName: string;
   email: string;
   password: string;
   role: StaffRole;
+  interviewPrograms: ProgramAssignment[];
 };
 
 type ServiceFormState = ServiceFormPayload;
@@ -64,6 +78,7 @@ const emptyStaffForm: StaffFormState = {
   email: "",
   password: "",
   role: "SUB_ADMIN",
+  interviewPrograms: [],
 };
 
 const emptyServiceForm: ServiceFormState = {
@@ -135,6 +150,56 @@ const initialShipmentFeatures: Record<ShipmentAudienceKey, string[]> = {
     "Release notes templates pushed to the developer workspace.",
   ],
 };
+const SUPER_ADMIN_SIDEBAR_ITEMS: DashboardSidebarItem[] = [
+  {
+    href: "#overview",
+    label: "Overview",
+    description: "Control tower summary",
+    icon: <LayoutDashboard className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#stats",
+    label: "Ops pulse",
+    description: "Customers, staff, and service lines",
+    icon: <BarChart3 className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#shipment-alternates",
+    label: "Shipment alternates",
+    description: "Feature toggles across audiences",
+    icon: <Package className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#launch-readiness",
+    label: "Launch readiness",
+    description: "Track briefs and shipment status",
+    icon: <ShieldCheck className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#staffing",
+    label: "Provision staff",
+    description: "Create sub-admins and developers",
+    icon: <UserCog className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#services",
+    label: "Service catalogue",
+    description: "Manage delivery offerings",
+    icon: <ClipboardList className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#projects",
+    label: "Projects & assignments",
+    description: "Assign squads and track execution",
+    icon: <Code2 className="h-4 w-4 text-indigo-500" />,
+  },
+  {
+    href: "#governance",
+    label: "Governance & reports",
+    description: "Alerts, downloads, and discussions",
+    icon: <BellRing className="h-4 w-4 text-indigo-500" />,
+  },
+];
 
 function extractFeatureLines(details: string | null | undefined): string[] {
   if (!details) {
@@ -165,6 +230,7 @@ export default function SuperAdminPage() {
   const [assignmentForm, setAssignmentForm] = useState(emptyAssignmentForm);
 
   const [creatingStaff, setCreatingStaff] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
   const [savingService, setSavingService] = useState(false);
   const [assigningMember, setAssigningMember] = useState(false);
   const [editingServiceId, setEditingServiceId] = useState<number | null>(null);
@@ -181,6 +247,9 @@ export default function SuperAdminPage() {
   const [newShipmentFeature, setNewShipmentFeature] = useState("");
   const [newShipmentAudience, setNewShipmentAudience] =
     useState<ShipmentAudienceKey>("CUSTOMER_WORKSPACE");
+  const [interviewProgramAssignments, setInterviewProgramAssignments] = useState<
+    Record<number, ProgramAssignment[]>
+  >({});
   const confettiPieces = useMemo(() => {
     const colors = ["#6366f1", "#f97316", "#10b981", "#ec4899"];
     return Array.from({ length: 18 }, (_, index) => ({
@@ -304,21 +373,41 @@ export default function SuperAdminPage() {
     event.preventDefault();
     if (!token) return;
     setCreatingStaff(true);
+    setStaffError(null);
     try {
+      const payloadRole = staffForm.role === "INTERVIEW_SUB_ADMIN" ? "SUB_ADMIN" : staffForm.role;
+      const { fullName, email, password, interviewPrograms } = staffForm;
       const response = await apiFetch<UserProfile>(
         "/api/super-admin/staff",
         {
           method: "POST",
           token,
-          body: JSON.stringify(staffForm),
+          body: JSON.stringify({
+            fullName,
+            email,
+            password,
+            role: payloadRole,
+          }),
         },
       );
-      if (staffForm.role === "SUB_ADMIN") {
-        setSubAdmins((prev) => [response.data, ...prev]);
-      } else {
+      if (staffForm.role === "DEVELOPER") {
         setDevelopers((prev) => [response.data, ...prev]);
+      } else {
+        setSubAdmins((prev) => [response.data, ...prev]);
+        if (staffForm.role === "INTERVIEW_SUB_ADMIN") {
+          setInterviewProgramAssignments((prev) => ({
+            ...prev,
+            [response.data.id]: interviewPrograms,
+          }));
+        }
       }
       setStaffForm(emptyStaffForm);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to create staff account. Please verify the details and try again.";
+      setStaffError(message);
     } finally {
       setCreatingStaff(false);
     }
@@ -634,18 +723,51 @@ export default function SuperAdminPage() {
           </div>
         </div>
       )}
-      <div className="mx-auto flex max-w-6xl flex-col gap-8 px-4">
-        <header className="flex flex-col gap-2">
-          <h1 className="text-2xl font-semibold text-slate-900">
-            Super Admin Control Tower
-          </h1>
-          <p className="text-sm text-slate-500">
-            Orchestrate staffing, services, governance, and reporting for
-            Arc-i-Tech.
-          </p>
-        </header>
+      <div className="mx-auto flex max-w-7xl flex-col gap-8 px-4 lg:flex-row lg:items-start">
+        <DashboardSidebar
+          title="Control tower menu"
+          subtitle="Jump to super admin workflows"
+          items={SUPER_ADMIN_SIDEBAR_ITEMS}
+          footer={
+            <span className="text-slate-400">
+              Stay aligned with programme leads before toggling shipment alternates or staffing.
+            </span>
+          }
+        />
+        <div className="flex-1 space-y-8">
+          <header
+            id="overview"
+            className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+          >
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">
+              Super Admin Control Tower
+            </h1>
+            <p className="text-sm text-slate-500">
+              Orchestrate staffing, services, governance, and reporting for
+              Arc-i-Tech.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/super-admin/mock-interviews"
+              className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:border-indigo-300 hover:bg-white"
+            >
+              Manage mock interview ops
+            </Link>
+            <Link
+              href="/mentorship-sub-admin"
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-600 transition hover:border-emerald-300 hover:bg-white"
+            >
+              Manage mentorship ops
+            </Link>
+          </div>
+          </header>
 
-        <section className="grid gap-4 md:grid-cols-3">
+        <section
+          id="stats"
+          className="grid gap-4 md:grid-cols-3"
+        >
           {stats.map((stat) => (
             <div
               key={stat.label}
@@ -664,7 +786,10 @@ export default function SuperAdminPage() {
           ))}
         </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section
+          id="shipment-alternates"
+          className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+        >
           <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-900">
@@ -772,7 +897,10 @@ export default function SuperAdminPage() {
           </form>
         </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section
+          id="launch-readiness"
+          className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+        >
           <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-slate-900">
@@ -895,8 +1023,14 @@ export default function SuperAdminPage() {
           </div>
         </section>
 
-        <section className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section
+          id="staffing"
+          className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]"
+        >
+          <div
+            id="services"
+            className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+          >
             <h2 className="text-lg font-semibold text-slate-900">
               Provision staff
             </h2>
@@ -960,28 +1094,92 @@ export default function SuperAdminPage() {
                       setStaffForm((prev) => ({
                         ...prev,
                         role: event.target.value as StaffRole,
+                        interviewPrograms:
+                          event.target.value === "INTERVIEW_SUB_ADMIN"
+                            ? prev.interviewPrograms
+                            : [],
                       }))
                     }
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
                   >
                     <option value="SUB_ADMIN">Sub-admin</option>
+                    <option value="INTERVIEW_SUB_ADMIN">
+                      Interview sub-admin (mock program)
+                    </option>
                     <option value="DEVELOPER">Developer</option>
                   </select>
                 </label>
               </div>
+              {staffForm.role === "INTERVIEW_SUB_ADMIN" && (
+                <fieldset className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 text-xs text-slate-600">
+                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wide text-indigo-600">
+                    Mock/interview programs
+                  </legend>
+                  <p className="text-[11px] text-slate-500">
+                    Select the programs this sub-admin should manage. They will see matching dashboards and reports.
+                  </p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    {(
+                      [
+                        ["MOCK_INTERVIEW", "Mock interview coaching"],
+                        ["INTERVIEW_PREP", "Interview prep resources"],
+                        ["PLACEMENT_GUIDANCE", "Placement guidance & offers"],
+                        ["PROJECT_MENTORSHIP", "Project mentorship operations"],
+                      ] as Array<[ProgramAssignment, string]>
+                    ).map(([value, label]) => {
+                      const checked = staffForm.interviewPrograms.includes(value);
+                      return (
+                        <label
+                          key={value}
+                          className="inline-flex items-center gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:border-indigo-200"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) =>
+                              setStaffForm((prev) => ({
+                                ...prev,
+                                interviewPrograms: event.target.checked
+                                  ? [...prev.interviewPrograms, value]
+                                  : prev.interviewPrograms.filter((program) => program !== value),
+                              }))
+                            }
+                            className="h-4 w-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          {label}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+              )}
               <button
                 type="submit"
                 disabled={creatingStaff}
                 className="w-full rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {creatingStaff ? "Creating..." : "Create account"}
-              </button>
+        {creatingStaff ? "Creating..." : "Create account"}
+      </button>
+      {staffError ? (
+        <p className="text-xs font-semibold text-rose-600">{staffError}</p>
+      ) : null}
+              <p className="text-xs text-slate-500">
+                Interview sub-admins inherit sub-admin permissions and gain access to the dedicated
+                mock interview dashboard.
+              </p>
             </form>
             <div className="mt-6 grid gap-3 md:grid-cols-2">
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <h3 className="text-sm font-semibold text-slate-900">
                   Sub-admin roster
                 </h3>
+                <p className="text-[11px] text-slate-400">
+                  Includes interview sub-admins. Share the{" "}
+                  <Link href="/interview-sub-admin" className="text-indigo-600 underline">
+                    interview sub-admin dashboard
+                  </Link>{" "}
+                  with relevant members.
+                </p>
                 <ul className="mt-3 space-y-2 text-xs text-slate-600">
                   {subAdmins.length === 0 ? (
                     <li>No sub-admins yet.</li>
@@ -1000,6 +1198,20 @@ export default function SuperAdminPage() {
                             {member.fullName}
                           </p>
                           <p>{member.email}</p>
+                          {interviewProgramAssignments[member.id]?.length ? (
+                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                              {interviewProgramAssignments[member.id].map((program) => (
+                                <span
+                                  key={`${member.id}-${program}`}
+                                  className="rounded-full bg-indigo-50 px-2 py-1 text-indigo-600"
+                                >
+                                  {program
+                                    .replace("_", " ")
+                                    .toLowerCase()}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                         <button
                           type="button"
@@ -1122,7 +1334,10 @@ export default function SuperAdminPage() {
             )}
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div
+            id="governance"
+            className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+          >
             <h2 className="text-lg font-semibold text-slate-900">
               Manage services
             </h2>
@@ -1310,7 +1525,10 @@ export default function SuperAdminPage() {
           </div>
         </section>
 
-        <section className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]">
+        <section
+          id="projects"
+          className="grid gap-6 md:grid-cols-[1.1fr_0.9fr]"
+        >
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-slate-900">
               Project staffing
@@ -1514,6 +1732,7 @@ export default function SuperAdminPage() {
           </div>
         </section>
       </div>
+    </div>
       <style jsx global>{`
         .confetti-piece {
           position: absolute;
@@ -1545,6 +1764,8 @@ export default function SuperAdminPage() {
     </div>
   );
 }
+
+
 
 
 

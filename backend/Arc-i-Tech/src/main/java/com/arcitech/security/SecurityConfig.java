@@ -49,6 +49,8 @@ public class SecurityConfig {
                         ).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/projects/highlights").permitAll()
                         .requestMatchers("/api/notifications/**").authenticated()
+                        .requestMatchers("/api/dashboard/access/**").hasRole("CUSTOMER")
+                        .requestMatchers("/api/program-access/**").hasAnyRole("SUPER_ADMIN", "SUB_ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/admin/discussions/context/**")
                         .hasAnyRole("SUPER_ADMIN", "SUB_ADMIN", "DEVELOPER")
                         .requestMatchers("/api/super-admin/**").hasRole("SUPER_ADMIN")
